@@ -1,0 +1,122 @@
+import numpy as np
+import pandas as pd
+import os
+import matplotlib.pyplot as plt  # for plotting
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import Dense, LSTM
+from sklearn.model_selection import train_test_split
+from Orange.data import Table, Domain, ContinuousVariable, StringVariable
+from datetime import datetime
+
+# Read data from Orange Canvas data table
+data_table = in_data
+
+# Extract features from the data table
+# Assuming the attribute names are 'Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume', and 'TOTAL VALUE TRADED'
+attribute_names = ['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume', 'TOTAL VALUE TRADED']
+data = np.array([np.array([x[attr] for attr in attribute_names]) for x in data_table])
+
+# Perform any additional preprocessing steps as necessary
+# For example, scaling the features
+scaler = MinMaxScaler()
+data_scaled = scaler.fit_transform(data)
+
+# Define time_steps
+time_steps = 1
+
+# Function to create dataset for LSTM
+def create_lstm_dataset(dataset, time_steps=1):
+    dataX, dataY = [], []
+    for i in range(len(dataset) - time_steps):
+        sequence = dataset[i:(i + time_steps), :]
+        target = dataset[i + time_steps, 1]  # Assuming the target is 'Open', adjust if needed
+        dataX.append(sequence)
+        dataY.append(target)
+    return np.array(dataX), np.array(dataY)
+
+# Create LSTM dataset
+X_train, y_train = create_lstm_dataset(data_scaled, time_steps)
+
+# Build the LSTM model
+def build_lstm_model(input_shape):
+    model = Sequential()
+    model.add(LSTM(units=50, return_sequences=True, input_shape=input_shape))
+    model.add(LSTM(units=50))
+    model.add(Dense(units=1))
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    return model
+
+model = build_lstm_model(input_shape=(X_train.shape[1], X_train.shape[2]))
+
+# Train the LSTM model
+history = model.fit(X_train, y_train, epochs=100, batch_size=32, validation_split=0.2)
+
+# Plot training and validation loss
+plt.plot(history.history['loss'], label='Training Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.title('Training and Validation Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+# Make predictions on the training data
+predictions = model.predict(X_train)
+
+# Plotting predictions vs. actuals for training data
+plt.plot(predictions, label='Predictions')
+plt.plot(y_train, label='Actuals')
+plt.title('Predictions vs. Actuals (Training Data)')
+plt.xlabel('Time')
+plt.ylabel('Value')
+plt.legend()
+plt.show()
+
+# Number of future time steps to forecast
+num_forecast_steps = 200  # Adjusted for 200 days forecast
+
+# Generate initial input sequence for forecasting
+last_sequence = data_scaled[-time_steps:, :]
+
+# Forecast future prices
+future_predictions = []
+
+for _ in range(num_forecast_steps):
+    # Reshape input sequence for prediction
+    sequence = last_sequence.reshape((1, time_steps, last_sequence.shape[1]))
+    
+    # Predict the next price
+    next_price = model.predict(sequence)[0, 0]
+    
+    # Append the predicted price to the list of future predictions
+    future_predictions.append(next_price)
+    
+    # Update the input sequence for the next prediction
+    last_sequence = np.vstack([last_sequence[1:], np.array([next_price, 0, 0, 0, 0, 0, 0, 0])])
+
+# Convert future predictions to original scale
+future_predictions = np.array(future_predictions).reshape(-1, 1)
+future_predictions = scaler.inverse_transform(np.hstack((np.zeros((len(future_predictions), 1)), future_predictions)))[:, 1]
+
+# Plot future price predictions
+plt.plot(future_predictions, label='Future Predictions')
+plt.title('Forecasted Future Prices for 200 Days')
+plt.xlabel('Time (Days)')
+plt.ylabel('Price')
+plt.legend()
+plt.show()
+
+# Outputting Predicted Data to Data Table
+# Increase the total count of attributes by one to accommodate the predicted column
+total_columns = len(data_table.domain.attributes) + 1
+
+# Create a new domain for the predicted table
+predicted_domain = Domain(data_table.domain.attributes + (ContinuousVariable('Predicted'),))
+
+# Concatenate the predicted data with the original data without the 'Date' attribute
+predicted_data = np.hstack((data_scaled[:, 1:], np.full((len(data_scaled), 1), np.nan), future_predictions.reshape(-1, 1)))
+
+# Output the predicted table to Orange Canvas
+predicted_table = Table.from_numpy(predicted_domain, predicted_data)
+out_data = predicted_table
